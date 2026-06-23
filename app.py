@@ -1,43 +1,60 @@
 import streamlit as st
 import requests
 
-st.set_page_config(page_title="Grafton River Monitor", layout="centered")
+# Set page config
+st.set_page_config(page_title="River Level Monitor", layout="centered")
 st.title("Grafton River Level Monitor")
 
-# OFFICIAL NWPS GAUGE ENDPOINTS
-# NWPS uses these paths for observation data
-GAUGES = {
-    "Upper": "GRFI2",
-    "Tail": "ALNI2"
-}
-
+# Function to fetch data safely
 def get_nwps_data(gauge_id):
-    # The official NWPS endpoint for gauge observations
+    # Official NWPS API endpoint
     url = f"https://api.water.noaa.gov/nwps/v1/gauges/{gauge_id}/stageflow"
+    headers = {"User-Agent": "RiverMonitor/2.0"}
+    
     try:
-        # User-Agent is required by NOAA for their new API
-        headers = {"User-Agent": "RiverMonitor/2.0"}
-        response = requests.get(url, headers=headers, timeout=10).json()
+        response = requests.get(url, headers=headers, timeout=10)
+        # Check if request was successful
+        if response.status_code != 200:
+            st.error(f"API returned status {response.status_code}")
+            return None
+            
+        data = response.json()
         
-        # Modern NWPS schema: 'observed' -> 'data' -> latest entry
-        # We look for the most recent record
-        data = response.get('observed', {}).get('data', [])
-        if data:
-            # The modern API returns the latest entry at the end of the list
-            latest = data[-1]
-            return float(latest.get('stage', 0))
+        # Defensive navigation of JSON:
+        # Looking for 'observed' -> 'data' list
+        observed = data.get('observed', {})
+        entries = observed.get('data', [])
+        
+        if not entries:
+            st.warning(f"No observed data found for gauge {gauge_id}")
+            return None
+            
+        # Get the latest entry
+        latest = entries[-1]
+        
+        # Check for 'stage' key, if not found return None but show raw entry for debug
+        stage = latest.get('stage')
+        if stage is None:
+            st.error(f"Gauge {gauge_id} data entry missing 'stage' key: {latest}")
+            return None
+            
+        return float(stage)
+        
     except Exception as e:
-        st.error(f"API Error: {e}")
-    return None
+        st.error(f"Fetch error for {gauge_id}: {str(e)}")
+        return None
 
-up_val = get_nwps_data(GAUGES["Upper"])
-down_val = get_nwps_data(GAUGES["Tail"])
+# Fetch data for both gauges
+up_val = get_nwps_data("GRFI2")
+down_val = get_nwps_data("ALNI2")
 
+# Display results if available
 if up_val is not None and down_val is not None:
     diff = abs(up_val - down_val)
     st.metric("Head Differential", f"{diff:.2f} FT")
+    
     col1, col2 = st.columns(2)
     col1.metric("Upper Pool", f"{up_val:.2f} FT")
     col2.metric("Tailwater", f"{down_val:.2f} FT")
 else:
-    st.error("Unable to retrieve data from the NWPS service. The gauge may be offline.")
+    st.info("Waiting for valid data from NOAA API...")
