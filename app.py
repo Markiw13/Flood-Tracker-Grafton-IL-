@@ -4,63 +4,64 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # --- CONFIG ---
-st.set_page_config(page_title="River Monitor", layout="centered")
-st.title("River Level Monitor")
+st.set_page_config(page_title="Flood Tracker", layout="wide")
+st.title("Grafton River Level Monitor")
 
+# --- PROFESSIONAL DATA PARSER ---
 @st.cache_data(ttl=600)
-def fetch_data():
-    headers = {"User-Agent": "Mozilla/5.0"}
+def get_river_data():
+    # Using a broader API request to catch current telemetry
+    session = requests.Session()
+    session.headers.update({"User-Agent": "FloodTracker/1.0"})
+    
     urls = {
-        "upper": "https://api.water.noaa.gov/nwps/v1/gauges/GRFI2/stageflow",
-        "lower": "https://api.water.noaa.gov/nwps/v1/gauges/ALNI2/stageflow"
+        "Upper": "https://api.water.noaa.gov/nwps/v1/gauges/GRFI2/stageflow",
+        "Tail": "https://api.water.noaa.gov/nwps/v1/gauges/ALNI2/stageflow"
     }
-    data_frames = {}
+    
+    dfs = {}
     for name, url in urls.items():
-        res = requests.get(url, headers=headers, timeout=10).json()
-        raw = res.get('observed', {}).get('data', [])
-        df = pd.DataFrame(raw)
+        response = session.get(url, timeout=10).json()
+        # Direct pathing to observed data
+        obs = response.get('observed', {}).get('data', [])
+        df = pd.DataFrame(obs)
         
-        # DYNAMIC FINDER: Look for time and stage columns regardless of specific name
-        time_col = next((c for c in df.columns if 'time' in c.lower()), None)
-        stage_col = next((c for c in df.columns if 'stage' in c.lower()), None)
-        
-        if time_col and stage_col:
-            df = df[[time_col, stage_col]].rename(columns={time_col: 'time', stage_col: 'stage'})
-            df['time'] = pd.to_datetime(df['time'])
-            df['stage'] = pd.to_numeric(df['stage'], errors='coerce')
-            data_frames[name] = df.dropna()
+        # Ensure correct column selection
+        if 'validTime' in df.columns and 'stage' in df.columns:
+            df = df[['validTime', 'stage']].copy()
+            df['validTime'] = pd.to_datetime(df['validTime'])
+            df['stage'] = pd.to_numeric(df['stage'])
+            dfs[name] = df.sort_values('validTime')
         else:
-            raise ValueError(f"Could not find time/stage data in {name} feed")
+            # Fallback if structure is missing
+            raise KeyError(f"Data feed {name} structure unexpected.")
             
-    return data_frames['upper'], data_frames['lower']
+    return dfs['Upper'], dfs['Tail']
 
-# --- MAIN ---
+# --- APP EXECUTION ---
 try:
-    df_up, df_down = fetch_data()
-    up_val = df_up['stage'].iloc[-1]
-    down_val = df_down['stage'].iloc[-1]
-    diff = abs(up_val - down_val)
+    df_upper, df_tail = get_river_data()
+    
+    # Latest readings
+    u_val = df_upper['stage'].iloc[-1]
+    t_val = df_tail['stage'].iloc[-1]
+    diff = abs(u_val - t_val)
 
-    # Status
-    if diff <= 0.75:
-        st.error(f"🚨 OPEN RIVER (Diff: {diff:.2f} FT)")
-    else:
-        st.success(f"🔒 CONTROLLED POOL (Diff: {diff:.2f} FT)")
+    # Status Dashboard
+    st.metric("System Head Differential", f"{diff:.2f} FT")
+    
+    col1, col2 = st.columns(2)
+    col1.metric("Upper Pool", f"{u_val:.2f} FT")
+    col2.metric("Tailwater", f"{t_val:.2f} FT")
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Upper", f"{up_val:.2f} FT")
-    col2.metric("Tail", f"{down_val:.2f} FT")
-    col3.metric("Drop", f"{diff:.2f} FT")
-
-    fig, ax = plt.subplots(figsize=(10, 4))
-    fig.patch.set_facecolor('#0e1117')
-    ax.set_facecolor('#0e1117')
-    ax.plot(df_up['time'], df_up['stage'], label='Upper', color='#51afef')
-    ax.plot(df_down['time'], df_down['stage'], label='Tail', color='#98c379')
-    ax.tick_params(colors='white')
-    ax.legend(facecolor='#0e1117', labelcolor='white')
+    # Charting
+    fig, ax = plt.subplots(figsize=(10, 3))
+    ax.plot(df_upper['validTime'], df_upper['stage'], label='Upper', color='#2196F3')
+    ax.plot(df_tail['validTime'], df_tail['stage'], label='Tail', color='#4CAF50')
+    ax.legend()
+    ax.grid(True, linestyle='--', alpha=0.6)
     st.pyplot(fig)
 
 except Exception as e:
-    st.error("Data structure changed. Attempting recovery...")
-    st.write(f"Log: {e}")
+    st.error("System synchronization issue.")
+    st.write(f"Diagnostic: {e}")
